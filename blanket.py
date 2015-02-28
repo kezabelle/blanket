@@ -4,11 +4,17 @@ from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
 from collections import OrderedDict, namedtuple
+from functools import partial
+import json
 import logging
 import re
 from webob import Request
 from webob import Response
 from webob.compat import iteritems_
+
+
+# Errors which may be raised
+class NoOutputError(LookupError): pass
 
 
 def keepcalling(data, **kwargs):
@@ -109,6 +115,48 @@ class URLTransformRegistry(object):
         return RoutePattern(raw=path, regex=regex)
 
 
+class Output(object):
+    __slots__ = ('responds_with', 'responds_to')
+    def __init__(self, responds_to, responds_with):
+        self.responds_with = responds_with
+        self.responds_to = responds_to
+
+    def __contains__(self, item):
+        return item in self.responds_to
+
+    def __call__(self, request, context):
+        response = keepcalling(self.responds_with,
+                               request=request,
+                               context=context)
+        return response
+
+def json_renderer(request, context):
+    try:
+        return json.dumps(context, indent=4, check_circular=True)
+    except (TypeError, ValueError) as e:
+        return None
+
+JSON = Output(responds_to=('application/json', 'application/javascript'),
+              responds_with=json_renderer)
+
+
+try:
+    import chevron
+    def mustache_template_renderer(request, context):
+        render = partial(chevron.render, data=context)
+        if 'template_file' in context:
+            with open(context['template_file'], 'r') as template:
+                return render(template=template)
+        elif 'template' in context:
+            return render(template=context['template'])
+        return None
+except ImportError:
+    def mustache_template_renderer(*args, **kwargs):
+        raise NoOutputError("`chevron` must be installed to use the default "
+                            "`mustache` implementation")
+
+mustache = Output(responds_to=('text/html',),
+                  responds_with=mustache_template_renderer)
 class ErrorHandlers(object):
     """
     A wrapper over an insertion-order-dictionary to map Exception classes
