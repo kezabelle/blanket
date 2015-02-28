@@ -4,8 +4,24 @@ from webob import Request
 from webob import Response
 
 
-class PathHandlers(object):
-    __slots__ = ()
+def keepcalling(data, **kwargs):
+    """
+    Given a function's return value (`data`), see if it's a callable, and if
+    it is, keep trying to call it as a function until it finally returns
+    something that's not a function/method.
+
+    Basically allows:
+    >>> def x():
+    ...    def y():
+    ...        def z():
+    ...            return True
+    ...        return z
+    ...    return y
+    >>> assert keepcalling(x) is True
+    """
+    while callable(data):
+        data = data(**kwargs)
+    return data
 
 
 class ErrorHandlers(object):
