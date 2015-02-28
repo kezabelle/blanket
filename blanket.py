@@ -109,9 +109,9 @@ class URLTransformRegistry(object):
         path_updated = path
         for handler in self.registry:
             for from_, to_ in handler:
-                final_to_ = keepcalling(to_, needle=from_, haystack=path,
-                                        updated_haystack=path_updated)
                 if from_ in path_updated:
+                    final_to_ = keepcalling(to_, needle=from_, haystack=path,
+                                            updated_haystack=path_updated)
                     path_updated = path_updated.replace(from_, final_to_)
         if not path_updated.startswith('/'):
             final_path = '^/{path!s}$'.format(path=path_updated)
