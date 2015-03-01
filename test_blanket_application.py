@@ -37,7 +37,7 @@ def _convoluted_response(request, *args, **kwargs):
 def test_get_ok_response():
     app = Blanket()
     view = ViewConfig(views=[_ok_response], outputs=[JSON])
-    app.router.add(path='/', handler=view)
+    app.add(path='/', handler=view)
     environ = {}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
@@ -46,7 +46,7 @@ def test_get_ok_response():
 
 def test_unlikely_call_stack_get():
     app = Blanket()
-    app.router.add(path='/', handler=_convoluted_response)
+    app.add(path='/', handler=_convoluted_response)
     environ = {}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
@@ -55,7 +55,7 @@ def test_unlikely_call_stack_get():
 
 def test_unlikely_call_stack_post():
     app = Blanket()
-    app.router.add(path='/', handler=_convoluted_response)
+    app.add(path='/', handler=_convoluted_response)
     environ = {'REQUEST_METHOD': 'POST'}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)

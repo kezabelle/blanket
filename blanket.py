@@ -16,9 +16,10 @@ from webob.compat import iteritems_
 
 
 # Errors which may be raised
+class BlanketValueError(ValueError): pass
 class NoOutputError(LookupError): pass
-class NoRouteFound(ValueError): pass
-class RouteExistsAlready(ValueError): pass
+class NoRouteFound(BlanketValueError): pass
+class RouteExistsAlready(BlanketValueError): pass
 
 
 def keepcalling(data, **kwargs):
@@ -372,6 +373,24 @@ class Blanket(object):
         :rtype: logging.Logger
         """
         return logging.getLogger(__name__)
+
+    def add(self, handler, path=None, exception_class=None):
+        if path is None and exception_class is None:
+            raise BlanketValueError("Must provide either a `path` or an "
+                                    "`exception_class` parameter to mount "
+                                    "this handler")
+        elif path is not None and exception_class is not None:
+            raise BlanketValueError("Cannot pass both `path` and "
+                                    "`exception_class` ... at least for now")
+        if path is not None:
+            self.router.add(path=path, handler=handler)
+        elif exception_class is not None:
+            self.error_router.add(exception_class=exception_class,
+                                  handler=handler)
+        else:
+            raise BlanketValueError("I don't know what you did, but I couldn't "
+                                    "add this handler given those parameters.")
+
 
     def get_response(self, environ):
         try:
