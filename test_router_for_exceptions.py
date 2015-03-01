@@ -4,8 +4,8 @@ from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
 from blanket import ErrorRouter
-from blanket import RouteExistsAlready
-from blanket import NoRouteFound
+from blanket import DuplicateRoute
+from blanket import NoErrorHandler
 import pytest
 
 
@@ -23,7 +23,7 @@ def test_suppresses_exceptions():
 def test_error_on_duplicates():
     router = ErrorRouter()
     router.add(exception_class=TypeError, handler=lambda x: x)
-    with pytest.raises(RouteExistsAlready):
+    with pytest.raises(DuplicateRoute):
             router.add(exception_class=TypeError, handler=lambda x: x)
 
 
@@ -33,5 +33,5 @@ def test_find_no_matching_path():
         return {'swallowed': exception.__class__.__name__}
     router.add(exception_class=TypeError, handler=swallow_error)
     router.add(exception_class=ValueError, handler=swallow_error)
-    with pytest.raises(NoRouteFound):
+    with pytest.raises(NoErrorHandler):
         router(exception=KeyError('test'))

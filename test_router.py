@@ -4,8 +4,8 @@ from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
 from blanket import Router
-from blanket import RouteExistsAlready
-from blanket import NoRouteFound
+from blanket import DuplicateRoute
+from blanket import NoRouteHandler
 import pytest
 from webob import Request
 
@@ -24,7 +24,7 @@ def test_router_add():
 def test_router_add_duplicate():
     router = Router()
     router.add(path='test/{a!s}/', handler=_fake_handler)
-    with pytest.raises(RouteExistsAlready):
+    with pytest.raises(DuplicateRoute):
             router.add(path='test/{a!s}/', handler=lambda x: x)
 
 
@@ -59,7 +59,7 @@ def test_find_no_matching_path():
     router.add(path='test/{a!s}/', handler=_fake_handler)
     router.add(path='test2/{a!s}/', handler=_fake_handler)
     request = Request.blank('/test2/')
-    with pytest.raises(NoRouteFound):
+    with pytest.raises(NoRouteHandler):
         router(request=request)
 
 

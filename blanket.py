@@ -13,15 +13,18 @@ from webob import Request
 from webob import Response
 from webob.acceptparse import MIMEAccept
 from webob.compat import iteritems_
+from webob.compat import reraise
 
 
 logger = logging.getLogger(__name__)
 
 # Errors which may be raised
 class BlanketValueError(ValueError): pass
-class NoOutputError(LookupError): pass
-class NoRouteFound(BlanketValueError): pass
-class RouteExistsAlready(BlanketValueError): pass
+class BlanketLookupError(LookupError): pass
+class NoOutputHandler(BlanketLookupError): pass
+class NoRouteHandler(BlanketLookupError): pass
+class NoErrorHandler(BlanketLookupError): pass
+class DuplicateRoute(BlanketValueError): pass
 
 
 def keepcalling(data, **kwargs):
@@ -163,7 +166,7 @@ try:
         return None
 except ImportError:
     def mustache_template_renderer(*args, **kwargs):
-        raise NoOutputError("`chevron` must be installed to use the default "
+        raise NoOutputHandler("`chevron` must be installed to use the default "
                             "`mustache` implementation")
 
 mustache = Output(responds_to=('text/html',),
@@ -192,7 +195,14 @@ def get_name_from_obj(obj):  # nocover
 
 class Route(namedtuple('Route', 'pattern handler')):
     def handles(self, value):
-        return self.pattern.regex.match(value)
+        """
+        See if this regex works for a given input, and if so, return any
+        groupdict matches, otherwise boolean False
+        """
+        result = self.pattern.regex.match(value)
+        if not result:
+            return False
+        return result.groupdict()
 
     def __repr__(self):
         return "<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
@@ -222,7 +232,7 @@ class Router(object):
         route_pattern = self.transformer.make(path=path)
         # handle duplicate mount points ...
         if route_pattern.raw in self.seen_routes:
-            raise RouteExistsAlready("`{path!s}` has already been added to "
+            raise DuplicateRoute("`{path!s}` has already been added to "
                                      "this <blanket.Router>".format(
                                          path=route_pattern.raw))
         self.seen_routes.add(route_pattern.raw)
@@ -237,9 +247,12 @@ class Router(object):
 
     def __call__(self, request):
         for route in self:
-            if route.handles(value=request.path):
-                return keepcalling(route.handler, request=request)
-        raise NoRouteFound("`{path}` does not match any of the given "
+            # returns False or a dict()
+            match_kwargs = route.handles(value=request.path)
+            if match_kwargs is not False:
+                return keepcalling(route.handler, request=request,
+                                   **match_kwargs)
+        raise NoRouteHandler("`{path}` does not match any of the given "
                       "routes: {routes!r}".format(
             path=request.path, routes=tuple(sorted(self.seen_routes))))
 
@@ -265,7 +278,7 @@ class ErrorRouter(object):
 
     def add(self, exception_class, handler):
         if exception_class in self.seen_routes:
-            raise RouteExistsAlready("{exc!r} has already been added to "
+            raise DuplicateRoute("{exc!r} has already been added to "
                                      "this <blanket.ErrorRouter>".format(
                                          exc=exception_class,
             ))
@@ -281,9 +294,11 @@ class ErrorRouter(object):
             if route.handles(value=exception):
                 return keepcalling(route.handler, exception=exception,
                                    request=request)
-        raise NoRouteFound("`{exc!r}` does not match any of the given "
-                      "routes: {routes!r}".format(
-            exc=exception.__class__, routes=tuple(sorted(self.seen_routes))))
+        raise NoErrorHandler("exception `{exc!r}` ({val!s}) does not match any "
+                           "of the given error types: {routes!r}".format(
+            exc=exception.__class__, val=exception,
+            routes=tuple(sorted(self.seen_routes)))
+        )
 
 class ViewConfig(object):
     """
@@ -334,7 +349,7 @@ class ViewConfig(object):
             renderer.responds_to for renderer in self.renderers))
         best_match = accepts.best_match(offers=defined_content_types)
         if best_match is None:
-            raise NoOutputError("Unable to find a renderer given {accepts!r} "
+            raise NoOutputHandler("Unable to find a renderer given {accepts!r} "
                                 "and defined renderers {renderers!r}".format(
                 accepts=accepts, renderers=defined_content_types
             ))
