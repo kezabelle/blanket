@@ -367,6 +367,32 @@ class ViewConfig(object):
         return None
 
 
+class Httpish(object):
+    __slots__ = ('init_kwargs',)
+
+    def __init__(self, request, **kwargs):
+        self.init_kwargs = kwargs
+
+    def __call__(self, request, **kwargs):
+        try:
+            func = getattr(self, request.method.lower())
+        except AttributeError as exc:
+            return None
+        try:
+            return func(request=request, **kwargs)
+        except NotImplementedError:
+            return None
+
+    def options(self, request, **kwargs): raise NotImplementedError
+    def get(self, request, **kwargs): raise NotImplementedError
+    def head(self, request, **kwargs): return self.get(request=request, **kwargs)
+    def post(self, request, **kwargs): raise NotImplementedError
+    def put(self, request, **kwargs): raise NotImplementedError
+    def patch(self, request, **kwargs): raise NotImplementedError
+    def delete(self, request, **kwargs): raise NotImplementedError
+    def trace(self, request, **kwargs): raise NotImplementedError
+
+
 class Blanket(object):
     """
     A blanket, generic approach to Doing Web Stuff that doesn't require
