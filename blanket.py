@@ -212,8 +212,9 @@ class Route(namedtuple('Route', 'pattern handler')):
 
 
 class Router(object):
-    __slots__ = ('routes', 'seen_routes', 'transformer')
-    def __init__(self):
+    __slots__ = ('routes', 'seen_routes', 'transformer', 'application')
+    def __init__(self, application=None):
+        self.application = application
         self.routes = []
         self.seen_routes = set()
         self.transformer = URLTransformRegistry()
@@ -272,7 +273,10 @@ class ErrorRoute(namedtuple('Route', 'exception_class handler')):
 
 
 class ErrorRouter(object):
-    def __init__(self):
+
+    __slots__ = ('routes', 'seen_routes', 'application')
+    def __init__(self, application=None):
+        self.application = application
         self.routes = []
         self.seen_routes = set()
 
@@ -402,13 +406,15 @@ class Blanket(object):
     Your context is your response.
     """
     __slots__ = (
+        'configuration',
         'error_router',
         'router',
     )
 
-    def __init__(self):
-        self.error_router = ErrorRouter()
-        self.router = Router()
+    def __init__(self, configuration=None):
+        self.configuration = configuration or {}
+        self.error_router = ErrorRouter(application=self)
+        self.router = Router(application=self)
 
     @property
     def log(self):
