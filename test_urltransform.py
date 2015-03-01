@@ -16,6 +16,16 @@ def test_repr():
     assert repr(urls) == expected
 
 
+def test_contains():
+    urls = URLTransformRegistry()
+    assert '{' in urls.registry
+
+
+def test_length():
+    urls = URLTransformRegistry()
+    assert len(urls.registry) == 10
+
+
 def test_plain():
     urls = URLTransformRegistry()
     result = urls.make('a/b/c')
