@@ -6,6 +6,7 @@ timid = False
 [report]
 exclude_lines =
     pragma: no cover
+    nocover
 precision = 0
 show_missing = True
 

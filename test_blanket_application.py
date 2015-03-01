@@ -7,9 +7,22 @@ from wsgiref.util import setup_testing_defaults
 from blanket import Blanket
 from blanket import ViewConfig
 from blanket import JSON
+from blanket import BlanketValueError
+from blanket import NoRouteFound
+import pytest
+
 
 def _ok_response(request):
     return {'yay': 1}
+
+
+def _exception_handler(exception, request):
+    return 'silenced {cls!r}, value: {val!s}'.format(cls=exception.__class__,
+                                                     val=exception)
+
+
+def _exception_raiser(request):
+    raise BlanketValueError('test')
 
 
 def _convoluted_post(request, *args, **kwargs):
@@ -60,3 +73,48 @@ def test_unlikely_call_stack_post():
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
     assert result.body == {'called': 'post'}
+
+
+def test_exception_causes_redirection_to_error_router():
+    app = Blanket()
+    app.add(path='/', handler=_exception_raiser)
+    app.add(exception_class=ValueError, handler=_exception_handler)
+    environ = {}
+    setup_testing_defaults(environ)
+    result = app.get_response(environ=environ)
+    assert result.body == ("silenced <class 'blanket.BlanketValueError'>, "
+                           "value: test")
+
+def test_exception_during_request_creation():
+    """
+    Looks like webob.Request will happily build without a valid wsgi environ,
+    so the PATH_INFO yields into NoRouteFound, which is in my code.
+    :return:
+    """
+    app = Blanket()
+    app.add(path='/', handler=_exception_raiser)
+    app.add(exception_class=ValueError, handler=_exception_handler)
+    with pytest.raises(NoRouteFound):
+        app.get_response(environ={})
+
+
+def test_add_path():
+    app = Blanket()
+    app.add(path='/', handler=_ok_response)
+
+
+def test_add_exception():
+    app = Blanket()
+    app.add(exception_class=StandardError, handler=_ok_response)
+
+
+def test_add_exception_and_path():
+    app = Blanket()
+    with pytest.raises(BlanketValueError):
+        app.add(path='/', exception_class=StandardError, handler=_ok_response)
+
+
+def test_add_handler_without_exception_or_path():
+    app = Blanket()
+    with pytest.raises(BlanketValueError):
+        app.add(handler=_ok_response)

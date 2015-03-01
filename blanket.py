@@ -15,6 +15,8 @@ from webob.acceptparse import MIMEAccept
 from webob.compat import iteritems_
 
 
+logger = logging.getLogger(__name__)
+
 # Errors which may be raised
 class BlanketValueError(ValueError): pass
 class NoOutputError(LookupError): pass
@@ -51,9 +53,9 @@ class TransformRegistry(object):
     def __init__(self, prefix_transformers=None, suffix_transformers=None):
         self.prefix_transformers = {}
         self.suffix_transformers = {}
-        if prefix_transformers is not None:  # noqa
+        if prefix_transformers is not None:  # nocover
             self.prefix_transformers.update(**prefix_transformers)
-        if suffix_transformers is not None:  # noqa
+        if suffix_transformers is not None:  # nocover
             self.suffix_transformers.update(**suffix_transformers)
 
     def __repr__(self):
@@ -168,7 +170,7 @@ mustache = Output(responds_to=('text/html',),
                   responds_with=mustache_template_renderer)
 
 
-def get_name_from_obj(obj):
+def get_name_from_obj(obj):  # nocover
     """
     This pretty much only exists right now for the purposes of the
     repr() for a Route instance's handler.
@@ -372,7 +374,8 @@ class Blanket(object):
         """
         :rtype: logging.Logger
         """
-        return logging.getLogger(__name__)
+        name = get_name_from_obj(obj=self)
+        return logging.getLogger(name)
 
     def add(self, handler, path=None, exception_class=None):
         if path is None and exception_class is None:
@@ -387,7 +390,7 @@ class Blanket(object):
         elif exception_class is not None:
             self.error_router.add(exception_class=exception_class,
                                   handler=handler)
-        else:
+        else:  # nocover
             raise BlanketValueError("I don't know what you did, but I couldn't "
                                     "add this handler given those parameters.")
 
@@ -395,7 +398,7 @@ class Blanket(object):
     def get_response(self, environ):
         try:
             request = Request(environ=environ, charset='utf-8')
-        except Exception as exc:
+        except Exception as exc:  # nocover
             self.log.error(msg="Unable to create a `Request` instance with "
                                "the given `environ`", exc_info=1)
             response = self.error_router(exception=exc)
