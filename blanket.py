@@ -5,11 +5,13 @@ from __future__ import unicode_literals
 from __future__ import division
 from collections import OrderedDict, namedtuple
 from functools import partial
+from itertools import chain
 import json
 import logging
 import re
 from webob import Request
 from webob import Response
+from webob.acceptparse import MIMEAccept
 from webob.compat import iteritems_
 
 
@@ -48,9 +50,9 @@ class TransformRegistry(object):
     def __init__(self, prefix_transformers=None, suffix_transformers=None):
         self.prefix_transformers = {}
         self.suffix_transformers = {}
-        if prefix_transformers is not None:
+        if prefix_transformers is not None:  # noqa
             self.prefix_transformers.update(**prefix_transformers)
-        if suffix_transformers is not None:
+        if suffix_transformers is not None:  # noqa
             self.suffix_transformers.update(**suffix_transformers)
 
     def __repr__(self):
@@ -138,7 +140,7 @@ class Output(object):
 
 def json_renderer(request, context):
     try:
-        return json.dumps(context, indent=4, check_circular=True)
+        return json.dumps(context, indent=4, check_circular=True).encode('UTF-8')
     except (TypeError, ValueError) as e:
         return None
 
@@ -165,40 +167,43 @@ mustache = Output(responds_to=('text/html',),
                   responds_with=mustache_template_renderer)
 
 
+def get_name_from_obj(obj):
+    """
+    This pretty much only exists right now for the purposes of the
+    repr() for a Route instance's handler.
 
-class Route(namedtuple('RouteView', 'pattern handler')):
-    @property
-    def handler_name(self):
+    Also it's pulled straight from django-debug-toolbar's function
+    'debug_toolbar.utils.get_name_from_obj`
         """
-        This pretty much only exists right now for the purposes of the
-        repr() for a Route instance.
+    if hasattr(obj, '__name__'):
+        name = obj.__name__
+    elif hasattr(obj, '__class__') and hasattr(obj.__class__, '__name__'):
+        name = obj.__class__.__name__
+    else:
+        name = '<unknown>'
+    if hasattr(obj, '__module__'):
+        module = obj.__module__
+        name = '%s.%s' % (module, name)
+    return name
 
-        Also it's pulled straight from django-debug-toolbar's function
-        'debug_toolbar.utils.get_name_from_obj`
-        """
-        if hasattr(self.handler, '__name__'):
-            name = self.handler.__name__
-        elif hasattr(self.handler, '__class__') and hasattr(self.handler.__class__, '__name__'):
-            name = self.handler.__class__.__name__
-        else:
-            name = '<unknown>'
-        if hasattr(self.handler, '__module__'):
-            module = self.handler.__module__
-            name = '%s.%s' % (module, name)
-        return name
+
+class Route(namedtuple('Route', 'pattern handler')):
+    def handles(self, value):
+        return self.pattern.regex.match(value)
 
     def __repr__(self):
-        return "<blanket.Route pattern={pattern!r}, handler={name!s}>".format(
-            pattern=self.pattern, name=self.handler_name,
+        return "<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
+            pattern=self.pattern, name=get_name_from_obj(self.handler),
+            cls=self.__class__.__name__,
         )
 
 
 class Router(object):
-    __slots__ = ('routes', 'seen_routes', 'url_generator')
+    __slots__ = ('routes', 'seen_routes', 'transformer')
     def __init__(self):
         self.routes = []
         self.seen_routes = set()
-        self.url_generator = URLTransformRegistry()
+        self.transformer = URLTransformRegistry()
 
     def __repr__(self):
         top3 = self.routes[0:3]
@@ -211,7 +216,7 @@ class Router(object):
             routes=top3, trailing=trailing)
 
     def add(self, path, handler):
-        route_pattern = self.url_generator.make(path=path)
+        route_pattern = self.transformer.make(path=path)
         # handle duplicate mount points ...
         if route_pattern.raw in self.seen_routes:
             raise RouteExistsAlready("`{path!s}` has already been added to "
@@ -225,77 +230,123 @@ class Router(object):
         return iter(self.routes)
 
     def __contains__(self, item):
-        return any(route.pattern.regex.match(item) for route in self)
+        return any(route.handles(value=item) for route in self)
 
     def __call__(self, request):
         for route in self:
-            route_match = route.pattern.regex.match(request.path)
-            if route_match:
-                return route.handler(request=request)
+            if route.handles(value=request.path):
+                return keepcalling(route.handler, request=request)
         raise NoRouteFound("`{path}` does not match any of the given "
                       "routes: {routes!r}".format(
             path=request.path, routes=tuple(sorted(self.seen_routes))))
 
 
-
-class ErrorHandlers(object):
-    """
-    A wrapper over an insertion-order-dictionary to map Exception classes
-    to a renderer/handler.
-    """
-
-    __slots__ = ('viewconfigs',)
-
-    def __init__(self):
-        self.viewconfigs = OrderedDict()
-
-    def add(self, exception_class, viewconfig):
+class ErrorRoute(namedtuple('Route', 'exception_class handler')):
+    def handles(self, value):
         """
-        Adds a new exception handler.
-
-        :param Exception exception_class: the class to bind to
-        :raises: LookupError
-        :return:
+        Accepts an exception instance
         """
-        if exception_class in self.viewconfigs.keys():
-            raise LookupError("{cls!r} is already registered with an "
-                             "error handler".format(cls=exception_class))
-        self.viewconfigs[exception_class] = viewconfig
-        return True
-
-    def remove(self, exception_class):
-        """
-        Removes a given exception from those that are bound handlers.
-        :param Exception exception_class: the class to bind to
-        :raises: LookupError
-        """
-        if exception_class not in self.viewconfigs.keys():
-            raise LookupError("{cls!r} is not registered as an "
-                              "error handler".format(cls=exception_class))
-        self.viewconfigs.pop(exception_class)
-        return True
-
-    def __contains__(self, item):
-        found_subclass =  (issubclass(item, k) for k in self.viewconfigs.keys())
-        return (item in self.viewconfigs.keys() or any(found_subclass))
-
-    def __getitem__(self, item):
-        if item in self.viewconfigs:
-            return self.viewconfigs[item]
-        # swallow so we can look for a superclass of this subclass exception
-        possibles =  (k for k in self.viewconfigs.keys()
-                      if issubclass(item, k))
-        try:
-            bestmatch = next(possibles)
-            return self.viewconfigs[bestmatch]
-        except StopIteration:
-            raise KeyError("`{key!s} is not a subclass of any existing "
-                           "error handler keys".format(key=item))
+        return isinstance(value, self.exception_class)
 
     def __repr__(self):
-        classes = ', '.join(str(x.__name__) for x in self.viewconfigs.keys())
-        return '<ErrorHandlers ({classes!r})>'.format(classes=classes)
+        return "<blanket.{cls!s} exception={exc!r}, handler={name!s}>".format(
+            exc=self.exception_class, name=get_name_from_obj(self.handler),
+            cls=self.__class__.__name__,
+        )
 
+
+class ErrorRouter(object):
+    def __init__(self):
+        self.routes = []
+        self.seen_routes = set()
+
+    def add(self, exception_class, handler):
+        if exception_class in self.seen_routes:
+            raise RouteExistsAlready("{exc!r} has already been added to "
+                                     "this <blanket.ErrorRouter>".format(
+                                         exc=exception_class,
+            ))
+        self.seen_routes.add(exception_class)
+        route = ErrorRoute(exception_class=exception_class, handler=handler)
+        self.routes.append(route)
+
+    def __iter__(self):
+        return iter(self.routes)
+
+    def __call__(self, exception, request=None):
+        for route in self:
+            if route.handles(value=exception):
+                return keepcalling(route.handler, exception=exception,
+                                   request=request)
+        raise NoRouteFound("`{exc!r}` does not match any of the given "
+                      "routes: {routes!r}".format(
+            exc=exception.__class__, routes=tuple(sorted(self.seen_routes))))
+
+class ViewConfig(object):
+    """
+
+    usage is:
+
+        vc = ViewConfig(
+            parameters={
+                'id': to_uuid,
+                'path': to_pathlib_obj,
+            }
+            views=(function,),
+            outputs=(JSON, HTML)
+        )
+
+    """
+    __slots__ = ('parameters', 'views', 'renderers')
+    def __init__(self, views, outputs, parameters=None):
+        """
+        :param dict parameters: converters for any URL arguments.
+        :param tuple views: lit of views which do ... something.
+        :param tuple outputs: list of renderers that may act on the views
+        """
+        self.parameters = parameters
+        self.views = views
+        self.renderers = outputs
+
+    def resolved_parameters(self, request, *args, **kwargs):
+        return {}
+
+    def context(self, request, *args, **kwargs):
+        """
+        runs all views, and squashes their individual context dictionaries
+        into one. Later views whose keys are already in the dict will replace
+        the previous values.
+
+        :rtype: dict
+        """
+        contexts = (view(request, *args, **kwargs) for view in self.views)
+        context = ((key, dict_[key]) for dict_ in contexts
+                   for key in dict_)
+        return dict(context)
+
+    def renderer(self, request, *args, **kwargs):
+        accepts = request.accept
+        """:type: webob.acceptparse.MIMEAccept"""
+        defined_content_types = tuple(chain.from_iterable(
+            renderer.responds_to for renderer in self.renderers))
+        best_match = accepts.best_match(offers=defined_content_types)
+        if best_match is None:
+            raise NoOutputError("Unable to find a renderer given {accepts!r} "
+                                "and defined renderers {renderers!r}".format(
+                accepts=accepts, renderers=defined_content_types
+            ))
+        pick_renderer = (renderer for renderer in self.renderers
+                         if best_match in renderer)
+        return next(pick_renderer)
+
+    def __call__(self, request, *args, **kwargs):
+        params = self.resolved_parameters(request, *args, **kwargs)
+        context = self.context(request, *args, **kwargs)
+        renderer = self.renderer(request, *args, **kwargs)
+        return renderer(request=request, context=context)
+
+    def remove(self):
+        return None
 
 
 class Blanket(object):
@@ -304,15 +355,16 @@ class Blanket(object):
     decorators, special return values from your views/controlllers, and
     that kind of jazz.
 
+    Your context is your response.
     """
     __slots__ = (
-        '_error_handlers',
-        '_path_handlers',
+        'error_router',
+        'router',
     )
 
     def __init__(self):
-        self._error_handlers = ErrorHandlers()
-        self._path_handlers = PathHandlers()
+        self.error_router = ErrorRouter()
+        self.router = Router()
 
     @property
     def log(self):
@@ -321,53 +373,24 @@ class Blanket(object):
         """
         return logging.getLogger(__name__)
 
-    def __call__(self, environ, start_response):
+    def get_response(self, environ):
         try:
             request = Request(environ=environ, charset='utf-8')
         except Exception as exc:
             self.log.error(msg="Unable to create a `Request` instance with "
                                "the given `environ`", exc_info=1)
-            return self.__error_view(exception=exc)
+            response = self.error_router(exception=exc)
+        else:
+            # we made the request OK
+            try:
+                response = self.router(request=request)
+            except Exception as exc:
+                self.log.error(msg="Unable to get the view handler for this "
+                                   "`request` instance safely.", exc_info=1,
+                               extra={'request': request})
+                response = self.error_router(exception=exc, request=request)
+        return Response(body=response)
 
-        try:
-            matches = self.__get_view_handler(request=request)
-        except Exception as exc:
-            self.log.error(msg="Unable to get the view handler for this "
-                               "`request` instance safely.", exc_info=1,
-                           extra={'request': request})
-            return self.__error_view(exception=exc, request=request)
-
-        try:
-            prepared_response = matches.handle(request=request)
-        except Exception as exc:
-            return self.__error_view(exception=exc, request=request)
-
-        response = Response(body=prepared_response)
-        return response(environ=environ, start_response=start_response)
-
-    def error_handler(self, exception_class, viewconfig):
-        self._error_handlers.add(exception_class=exception_class,
-                                 viewconfig=viewconfig)
-        return self
-
-    def __error_view(self, exception, request=None):
-        """
-
-        :param Exception exception: The error intance we encountered
-        :param webob.Request request: the request instance, if we got that far.
-        :rtype: webob.Response
-        """
-        exception_class = exception.__class__
-        if exception_class in self._error_handlers:
-            viewconfig = self._error_handlers[exception_class]
-        return None
-
-    def __get_view_handler(self, request):
-        """
-        :param Request request: the request instance, if we got that far.
-        """
-        return None
-
-
-application = Blanket().error_handler(exception_class=StandardError,
-                                      viewconfig=None)
+    def __call__(self, environ, start_response):
+        response_instance = self.get_response(environ=environ)
+        return response_instance(environ=environ, start_response=start_response)
