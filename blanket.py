@@ -280,6 +280,10 @@ class ErrorRouter(object):
         self.routes = []
         self.seen_routes = set()
 
+    def __repr__(self):
+        return '<blanket.ErrorRouter catching {routes!r}>'.format(
+            routes=self.seen_routes)
+
     def add(self, exception_class, handler):
         if exception_class in self.seen_routes:
             raise DuplicateRoute("{exc!r} has already been added to "
