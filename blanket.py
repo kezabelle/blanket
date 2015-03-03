@@ -138,6 +138,10 @@ class Output(object):
     def __contains__(self, item):
         return item in self.responds_to
 
+    def __repr__(self):
+        return ('<{cls} responds_to={responders!r}>'.format(
+            cls=self.__class__.__name__, responders=self.responds_to))
+
     def __call__(self, request, context):
         response = keepcalling(self.responds_with,
                                request=request,
@@ -193,7 +197,7 @@ def get_name_from_obj(obj):  # nocover
     return name
 
 
-class Route(namedtuple('Route', 'pattern handler')):
+class Route(namedtuple('Route', 'pattern handler outputs')):
     def handles(self, value):
         """
         See if this regex works for a given input, and if so, return any
@@ -205,10 +209,10 @@ class Route(namedtuple('Route', 'pattern handler')):
         return result.groupdict()
 
     def __repr__(self):
-        return "<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
+        return ("<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
             pattern=self.pattern, name=get_name_from_obj(self.handler),
-            cls=self.__class__.__name__,
-        )
+            cls=self.__class__.__name__, outputs=self.outputs,
+        ))
 
 
 class Router(object):
@@ -229,7 +233,7 @@ class Router(object):
         return '<blanket.Router routes={routes!r}{trailing!s}>'.format(
             routes=top3, trailing=trailing)
 
-    def add(self, path, handler):
+    def add(self, path, handler, outputs):
         route_pattern = self.transformer.make(path=path)
         # handle duplicate mount points ...
         if route_pattern.raw in self.seen_routes:
@@ -237,7 +241,7 @@ class Router(object):
                                      "this <blanket.Router>".format(
                                          path=route_pattern.raw))
         self.seen_routes.add(route_pattern.raw)
-        route = Route(pattern=route_pattern, handler=handler)
+        route = Route(pattern=route_pattern, handler=handler, outputs=outputs)
         self.routes.append(route)
 
     def __iter__(self):
@@ -258,7 +262,7 @@ class Router(object):
             path=request.path, routes=tuple(sorted(self.seen_routes))))
 
 
-class ErrorRoute(namedtuple('Route', 'exception_class handler')):
+class ErrorRoute(namedtuple('Route', 'exception_class handler outputs')):
     def handles(self, value):
         """
         Accepts an exception instance
@@ -266,10 +270,11 @@ class ErrorRoute(namedtuple('Route', 'exception_class handler')):
         return isinstance(value, self.exception_class)
 
     def __repr__(self):
-        return "<blanket.{cls!s} exception={exc!r}, handler={name!s}>".format(
+        return ("<blanket.{cls!s} exception={exc!r}, handler={name!s}, "
+                "outputs={outputs!r}>".format(
             exc=self.exception_class, name=get_name_from_obj(self.handler),
-            cls=self.__class__.__name__,
-        )
+            cls=self.__class__.__name__, outputs=self.outputs,
+        ))
 
 
 class ErrorRouter(object):
@@ -284,14 +289,15 @@ class ErrorRouter(object):
         return '<blanket.ErrorRouter catching {routes!r}>'.format(
             routes=self.seen_routes)
 
-    def add(self, exception_class, handler):
+    def add(self, exception_class, handler, outputs):
         if exception_class in self.seen_routes:
             raise DuplicateRoute("{exc!r} has already been added to "
                                      "this <blanket.ErrorRouter>".format(
                                          exc=exception_class,
             ))
         self.seen_routes.add(exception_class)
-        route = ErrorRoute(exception_class=exception_class, handler=handler)
+        route = ErrorRoute(exception_class=exception_class, handler=handler,
+                           outputs=outputs)
         self.routes.append(route)
 
     def __iter__(self):
@@ -308,71 +314,19 @@ class ErrorRouter(object):
             routes=tuple(sorted(self.seen_routes)))
         )
 
-class ViewConfig(object):
-    """
 
-    usage is:
+class ManyHandler(object):
+    __slots__ = ('handlers',)
+    def __init__(self, handlers):
+        # force invalid types to bubble back up early.
+        # noinspection PyStatementEffect
+        handlers.__iter__
+        self.handlers = handlers
 
-        vc = ViewConfig(
-            parameters={
-                'id': to_uuid,
-                'path': to_pathlib_obj,
-            }
-            views=(function,),
-            outputs=(JSON, HTML)
-        )
+    def __call__(self, **kwargs):
+        contexts = (keepcalling(handler, **kwargs) for handler in self.handlers)
+        return {k: v for context in contexts for k, v in iteritems_(context)}
 
-    """
-    __slots__ = ('parameters', 'views', 'renderers')
-    def __init__(self, views, outputs, parameters=None):
-        """
-        :param dict parameters: converters for any URL arguments.
-        :param tuple views: lit of views which do ... something.
-        :param tuple outputs: list of renderers that may act on the views
-        """
-        self.parameters = parameters
-        self.views = views
-        self.renderers = outputs
-
-    def resolved_parameters(self, request, *args, **kwargs):
-        return {}
-
-    def context(self, request, *args, **kwargs):
-        """
-        runs all views, and squashes their individual context dictionaries
-        into one. Later views whose keys are already in the dict will replace
-        the previous values.
-
-        :rtype: dict
-        """
-        contexts = (view(request, *args, **kwargs) for view in self.views)
-        context = ((key, dict_[key]) for dict_ in contexts
-                   for key in dict_)
-        return dict(context)
-
-    def renderer(self, request, *args, **kwargs):
-        accepts = request.accept
-        """:type: webob.acceptparse.MIMEAccept"""
-        defined_content_types = tuple(chain.from_iterable(
-            renderer.responds_to for renderer in self.renderers))
-        best_match = accepts.best_match(offers=defined_content_types)
-        if best_match is None:
-            raise NoOutputHandler("Unable to find a renderer given {accepts!r} "
-                                "and defined renderers {renderers!r}".format(
-                accepts=accepts, renderers=defined_content_types
-            ))
-        pick_renderer = (renderer for renderer in self.renderers
-                         if best_match in renderer)
-        return next(pick_renderer)
-
-    def __call__(self, request, *args, **kwargs):
-        params = self.resolved_parameters(request, *args, **kwargs)
-        context = self.context(request, *args, **kwargs)
-        renderer = self.renderer(request, *args, **kwargs)
-        return renderer(request=request, context=context)
-
-    def remove(self):
-        return None
 
 
 class Httpish(object):
@@ -428,7 +382,7 @@ class Blanket(object):
         name = get_name_from_obj(obj=self)
         return logging.getLogger(name)
 
-    def add(self, handler, path=None, exception_class=None):
+    def add(self, handler, outputs, path=None, exception_class=None):
         if path is None and exception_class is None:
             raise BlanketValueError("Must provide either a `path` or an "
                                     "`exception_class` parameter to mount "
@@ -437,10 +391,10 @@ class Blanket(object):
             raise BlanketValueError("Cannot pass both `path` and "
                                     "`exception_class` ... at least for now")
         if path is not None:
-            self.router.add(path=path, handler=handler)
+            self.router.add(path=path, handler=handler, outputs=outputs)
         elif exception_class is not None:
             self.error_router.add(exception_class=exception_class,
-                                  handler=handler)
+                                  handler=handler, outputs=outputs)
         else:  # nocover
             raise BlanketValueError("I don't know what you did, but I couldn't "
                                     "add this handler given those parameters.")
