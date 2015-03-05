@@ -3,17 +3,14 @@ from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
-from collections import OrderedDict, namedtuple
+from collections import namedtuple
 from functools import partial
-from itertools import chain
 import json
 import logging
 import re
 from webob import Request
 from webob import Response
-from webob.acceptparse import MIMEAccept
 from webob.compat import iteritems_
-from webob.compat import reraise
 
 
 logger = logging.getLogger(__name__)
@@ -139,8 +136,9 @@ class Output(object):
         return item in self.responds_to
 
     def __repr__(self):
-        return ('<{cls} responds_to={responders!r}>'.format(
-            cls=self.__class__.__name__, responders=self.responds_to))
+        return ('<{cls} responds_to=({responders!r})>'.format(
+            cls=self.__class__.__name__,
+            responders=', '.join(self.responds_to)))
 
     def __call__(self, request, context):
         response = keepcalling(self.responds_with,
@@ -159,6 +157,7 @@ JSON = Output(responds_to=('application/json', 'application/javascript'),
 
 
 try:
+    # noinspection PyUnresolvedReferences
     import chevron
     def mustache_template_renderer(request, context):
         render = partial(chevron.render, data=context)
@@ -171,7 +170,7 @@ try:
 except ImportError:
     def mustache_template_renderer(*args, **kwargs):
         raise NoOutputHandler("`chevron` must be installed to use the default "
-                            "`mustache` implementation")
+                              "`mustache` implementation")
 
 mustache = Output(responds_to=('text/html',),
                   responds_with=mustache_template_renderer)
@@ -238,8 +237,8 @@ class Router(object):
         # handle duplicate mount points ...
         if route_pattern.raw in self.seen_routes:
             raise DuplicateRoute("`{path!s}` has already been added to "
-                                     "this <blanket.Router>".format(
-                                         path=route_pattern.raw))
+                                 "this <blanket.Router>".format(
+                path=route_pattern.raw))
         self.seen_routes.add(route_pattern.raw)
         route = Route(pattern=route_pattern, handler=handler, outputs=outputs)
         self.routes.append(route)
@@ -258,7 +257,7 @@ class Router(object):
                 return keepcalling(route.handler, request=request,
                                    **match_kwargs)
         raise NoRouteHandler("`{path}` does not match any of the given "
-                      "routes: {routes!r}".format(
+                             "routes: {routes!r}".format(
             path=request.path, routes=tuple(sorted(self.seen_routes))))
 
 
@@ -292,8 +291,8 @@ class ErrorRouter(object):
     def add(self, exception_class, handler, outputs):
         if exception_class in self.seen_routes:
             raise DuplicateRoute("{exc!r} has already been added to "
-                                     "this <blanket.ErrorRouter>".format(
-                                         exc=exception_class,
+                                 "this <blanket.ErrorRouter>".format(
+                exc=exception_class,
             ))
         self.seen_routes.add(exception_class)
         route = ErrorRoute(exception_class=exception_class, handler=handler,
@@ -309,7 +308,7 @@ class ErrorRouter(object):
                 return keepcalling(route.handler, exception=exception,
                                    request=request)
         raise NoErrorHandler("exception `{exc!r}` ({val!s}) does not match any "
-                           "of the given error types: {routes!r}".format(
+                             "of the given error types: {routes!r}".format(
             exc=exception.__class__, val=exception,
             routes=tuple(sorted(self.seen_routes)))
         )
