@@ -33,6 +33,11 @@ setup(
     install_requires=(
         'WebOb>=1.4',
     ),
+    tests_require=(
+        'pytest>=2.6.4',
+        'pytest-cov>=1.8.1',
+        'chevron>=0.8.4',
+    ),
     author='Keryn Knight',
     author_email='python-package@kerynknight.com',
     description="playing with WSGI",
