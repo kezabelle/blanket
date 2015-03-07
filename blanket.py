@@ -12,7 +12,20 @@ from webob import Request
 from webob import Response
 from webob.compat import iteritems_
 
-
+__all__ = (
+    # errors
+    'BlanketValueError',
+    'BlanketLookupError',
+    'NoOutputHandler',
+    'NoRouteHandler',
+    'NoErrorHandler',
+    'DuplicateRoute',
+    # userland stuff
+    'keepcalling',
+    'ManyHandler',
+    'Httpish',
+    'Blanket',
+)
 logger = logging.getLogger(__name__)
 
 # Errors which may be raised
@@ -144,7 +157,8 @@ class Output(object):
 def json_renderer(request, context):
     try:
         return json.dumps(context, indent=4, check_circular=True).encode('UTF-8')
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError):
+        request.blanket.log.error("Unable to create JSON",exc_info=1)
         return None
 
 JSON = Output(responds_to=('application/json', 'application/javascript'),
@@ -217,6 +231,10 @@ class Router(object):
         self.seen_routes = set()
         self.transformer = URLTransformRegistry()
 
+    @property
+    def log(self):
+        return logging.getLogger(get_name_from_obj(self))
+
     def __repr__(self):
         top3 = self.routes[0:3]
         remaining = len(self.routes) - len(top3)
@@ -234,6 +252,10 @@ class Router(object):
             raise DuplicateRoute("`{path!s}` has already been added to "
                                  "this <blanket.Router>".format(
                 path=route_pattern.raw))
+
+        self.log.debug("{route!r} is being added onto {count} existing "
+                       "routes".format(route=route_pattern, count=len(self)))
+
         self.seen_routes.add(route_pattern.raw)
         route = Route(pattern=route_pattern, handler=handler, outputs=outputs)
         self.routes.append(route)
@@ -244,11 +266,21 @@ class Router(object):
     def __contains__(self, item):
         return any(route.handles(value=item) for route in self)
 
+    def __len__(self):
+        # this rather convoluted length check should mean I can tell if there's
+        # any drift between the set and the list.
+        return (len(self.routes) + len(self.seen_routes)) / 2
+
     def __call__(self, request):
         for route in self:
             # returns False or a dict()
             match_kwargs = route.handles(value=request.path)
             if match_kwargs is not False:
+                self.log.debug("{route!r} wants to handle `{path!s}` and "
+                               "provide the following parameters: "
+                               "{params!r}".format(route=route,
+                                                   path=request.path,
+                                                   params=match_kwargs))
                 return keepcalling(route.handler, request=request,
                                    **match_kwargs)
         raise NoRouteHandler("`{path}` does not match any of the given "
@@ -406,6 +438,7 @@ class Blanket(object):
             response = self.error_router(exception=exc)
         else:
             # we made the request OK
+            request.blanket = self
             try:
                 response = self.router(request=request)
             except Exception as exc:
