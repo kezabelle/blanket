@@ -297,6 +297,9 @@ class ErrorRouter(object):
     def __iter__(self):
         return iter(self.routes)
 
+    def __contains__(self, item):
+        return any(route.handles(value=item) for route in self)
+
     def __call__(self, exception, request=None):
         for route in self:
             if route.handles(value=exception):
