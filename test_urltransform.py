@@ -9,21 +9,20 @@ from blanket import RoutePattern
 
 def test_repr():
     urls = URLTransformRegistry()
-    expected = ("<blanket.URLTransformRegistry "
-                "registry=<blanket.TransformRegistry prefix_keys='{' "
+    expected = ("<blanket.URLTransformRegistry prefix_keys='{' "
                 "suffix_keys='!day}', '!d}', '!f}', '!month}', '!slug}', "
-                "'!s}', '!uuid}', '!x}', '!year}'>>")
+                "'!s}', '!uuid}', '!x}', '!year}'>")
     assert repr(urls) == expected
 
 
 def test_contains():
     urls = URLTransformRegistry()
-    assert '{' in urls.registry
+    assert '{' in urls
 
 
 def test_length():
     urls = URLTransformRegistry()
-    assert len(urls.registry) == 10
+    assert len(urls) == 10
 
 
 def test_plain():

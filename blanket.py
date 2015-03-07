@@ -44,50 +44,27 @@ def keepcalling(data, **kwargs):
     return data
 
 
-class TransformRegistry(object):
-    """
-    This could be a module level list, but that'd mean side-affects at import
-    time. Ewww.
-    """
-    __slots__ = ('prefix_transformers', 'suffix_transformers')
-    def __init__(self, prefix_transformers=None, suffix_transformers=None):
-        self.prefix_transformers = {}
-        self.suffix_transformers = {}
-        if prefix_transformers is not None:  # nocover
-            self.prefix_transformers.update(**prefix_transformers)
-        if suffix_transformers is not None:  # nocover
-            self.suffix_transformers.update(**suffix_transformers)
-
-    def __repr__(self):
-        return ("<blanket.TransformRegistry prefix_keys='{prefixes!s}' "
-                "suffix_keys='{suffixes!s}'>".format(
-            prefixes="', '".join(sorted(self.prefix_transformers.keys())),
-            suffixes="', '".join(sorted(self.suffix_transformers.keys())),
-        ))
-
-    def __iter__(self):
-        prefixes = iter(sorted(iteritems_(self.prefix_transformers)))
-        suffixes = iter(sorted(iteritems_(self.suffix_transformers)))
-        return iter((prefixes, suffixes))
-
-    def __contains__(self, item):
-        return item in self.suffix_transformers or item in self.prefix_transformers
-
-    def __len__(self):
-        return len(self.prefix_transformers) + len(self.suffix_transformers)
-
-
 class RoutePattern(namedtuple('RoutePattern', 'raw regex')):
+    """
+    Used as a container for the userland path and the
+    URLTransformRegistry-created regexp.
+    """
     __slots__ = ()
     def __repr__(self):
+        # the default repr for a compiled regexp is useless, but would otherwise
+        # bubble up in this namedtuple repr, so we override it.
         return "<blanket.RoutePattern raw='{raw!s}', regex='{regex!s}'>".format(
             raw=self.raw, regex=self.regex.pattern,
         )
 
 
 class URLTransformRegistry(object):
-    def __init__(self):
-        self.registry = TransformRegistry(suffix_transformers={
+    __slots__ = ('prefix_transformers', 'suffix_transformers')
+    def __init__(self, prefix_transformers=None, suffix_transformers=None):
+        self.prefix_transformers = {
+            '{': '(?P<',
+        }
+        self.suffix_transformers = {
             '!d}': '>[0-9]+?)',
             '!year}': '>[1-9][0-9]{3})',
             '!month}': '>(0[1-9]|1[0-2]))',
@@ -99,12 +76,30 @@ class URLTransformRegistry(object):
             '!uuid}': '>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})',  # noqa
             '!s}': '>.+?)',
             # '}': '>.+)'s,
-        }, prefix_transformers={'{': '(?P<'})
+        }
+        if prefix_transformers is not None:  # nocover
+            self.prefix_transformers.update(**prefix_transformers)
+        if suffix_transformers is not None:  # nocover
+            self.suffix_transformers.update(**suffix_transformers)
+
+    def __len__(self):
+        return len(self.prefix_transformers) + len(self.suffix_transformers)
+
+    def __contains__(self, item):
+        return item in self.suffix_transformers or item in self.prefix_transformers
+
+    def __iter__(self):
+        prefixes = iter(iteritems_(self.prefix_transformers))
+        suffixes = iter(iteritems_(self.suffix_transformers))
+        return iter((prefixes, suffixes))
 
     def __repr__(self):
-        return '<blanket.URLTransformRegistry registry={transformers!r}>'.format(  # noqa
-            transformers=self.registry,
-        )
+        return ("<{mod!s}.{cls!s} prefix_keys='{prefixes!s}' "
+                "suffix_keys='{suffixes!s}'>".format(
+            prefixes="', '".join(sorted(self.prefix_transformers.keys())),
+            suffixes="', '".join(sorted(self.suffix_transformers.keys())),
+            mod=self.__class__.__module__, cls=self.__class__.__name__,
+        ))
 
     def make(self, path):
         """
@@ -112,8 +107,8 @@ class URLTransformRegistry(object):
         and passed the `needle`, `haystack` and `updated_haystack` parameters.
         """
         path_updated = path
-        for handler in self.registry:
-            for from_, to_ in handler:
+        for handler in self:  # gets prefix or suffix set
+            for from_, to_ in handler: # individual str->regex
                 if from_ in path_updated:
                     final_to_ = keepcalling(to_, needle=from_, haystack=path,
                                             updated_haystack=path_updated)
