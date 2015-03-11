@@ -206,21 +206,28 @@ def get_name_from_obj(obj):  # nocover
 
 
 class Route(namedtuple('Route', 'pattern handler outputs')):
-    def handles(self, value):
-        """
-        See if this regex works for a given input, and if so, return any
-        groupdict matches, otherwise boolean False
-        """
-        result = self.pattern.regex.match(value)
-        if not result:
-            return False
-        return result.groupdict()
+    @property
+    def log(self):
+        return logging.getLogger(get_name_from_obj(self))
 
     def __repr__(self):
         return ("<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
             pattern=self.pattern, name=get_name_from_obj(self.handler),
             cls=self.__class__.__name__, outputs=self.outputs,
         ))
+
+    def __call__(self, request):
+        match = self.pattern.regex.match(request.path)
+        if match is not None:
+            match_kwargs = match.groupdict()
+            self.log.debug("{route!r} wants to handle `{path!s}` and "
+                           "provide the following parameters: "
+                           "{params!r}".format(route=self,
+                                               path=request.path,
+                                               params=match_kwargs))
+            return keepcalling(self.handler, request=request,
+                               **match_kwargs)
+        return None
 
 
 class Router(object):
@@ -242,8 +249,8 @@ class Router(object):
             trailing = ', {} remaining ...'.format(remaining)
         else:
             trailing = ''
-        return '<blanket.Router routes={routes!r}{trailing!s}>'.format(
-            routes=top3, trailing=trailing)
+        return '<{name!s} routes={routes!r}{trailing!s}>'.format(
+            routes=top3, trailing=trailing, name=get_name_from_obj(self))
 
     def add(self, path, handler, outputs):
         route_pattern = self.transformer.make(path=path)
@@ -264,7 +271,7 @@ class Router(object):
         return iter(self.routes)
 
     def __contains__(self, item):
-        return any(route.handles(value=item) for route in self)
+        return any(route.pattern.regex.match(item) for route in self)
 
     def __len__(self):
         # this rather convoluted length check should mean I can tell if there's
@@ -273,16 +280,9 @@ class Router(object):
 
     def __call__(self, request):
         for route in self:
-            # returns False or a dict()
-            match_kwargs = route.handles(value=request.path)
-            if match_kwargs is not False:
-                self.log.debug("{route!r} wants to handle `{path!s}` and "
-                               "provide the following parameters: "
-                               "{params!r}".format(route=route,
-                                                   path=request.path,
-                                                   params=match_kwargs))
-                return keepcalling(route.handler, request=request,
-                                   **match_kwargs)
+            result = route(request=request)
+            if result is not None:
+                return result
         raise NoRouteHandler("`{path}` does not match any of the given "
                              "routes: {routes!r}".format(
             path=request.path, routes=tuple(sorted(self.seen_routes))))
@@ -432,6 +432,11 @@ class Blanket(object):
     def get_response(self, environ):
         try:
             request = Request(environ=environ, charset='utf-8')
+            # MIMEAccept/NilAccept don't implement len() :(
+            if not request.accept:
+                raise BlanketValueError("It's a crazy world, but I won't be "
+                                        "able to respond without an "
+                                        "`HTTP_ACCEPT` header")
         except Exception as exc:  # nocover
             self.log.error(msg="Unable to create a `Request` instance with "
                                "the given `environ`", exc_info=1)
