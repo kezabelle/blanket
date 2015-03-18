@@ -4,7 +4,7 @@ from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
 from wsgiref.util import setup_testing_defaults
-from blanket import Blanket
+from blanket import Blanket, NoRouteHandler
 # from blanket import ViewConfig
 from blanket import JSON
 from blanket import BlanketValueError
@@ -12,7 +12,7 @@ from blanket import NoErrorHandler
 import pytest
 
 
-def _ok_response(request, randomvalue):
+def _ok_response(request, randomvalue=1):
     return {'yay': int(randomvalue)}
 
 
@@ -69,19 +69,22 @@ def test_unlikely_call_stack_get():
     """
     app = Blanket()
     app.add(path='/{test!x}/', handler=_convoluted_response, outputs=[JSON])
-    environ = {'PATH_INFO': '/FFCCFF/'}
+    environ = {'PATH_INFO': '/FFCCFF/',
+               'HTTP_ACCEPT': "application/xml;q=0.9,image/webp,*/*;q=0.8"}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
-    assert result.body == {'called': 'get', 'kwarg': 'FFCCFF'}
+    assert result == {'called': 'get', 'kwarg': 'FFCCFF'}
 
 
 def test_unlikely_call_stack_post():
     app = Blanket()
     app.add(path='/{test!x}/', handler=_convoluted_response, outputs=[JSON])
-    environ = {'REQUEST_METHOD': 'POST', 'PATH_INFO': '/CCFFCC/'}
+    environ = {'REQUEST_METHOD': 'POST',
+               'PATH_INFO': '/CCFFCC/',
+               'HTTP_ACCEPT': "application/xml;q=0.9,image/webp,*/*;q=0.8"}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
-    assert result.body == {'called': 'post', 'kwarg': 'CCFFCC'}
+    assert result == {'called': 'post', 'kwarg': 'CCFFCC'}
 
 
 def test_exception_causes_redirection_to_error_router():
@@ -89,11 +92,11 @@ def test_exception_causes_redirection_to_error_router():
     app.add(path='/', handler=_exception_raiser, outputs=[JSON])
     app.add(exception_class=ValueError, handler=_exception_handler,
             outputs=[JSON])
-    environ = {}
+    environ = {'HTTP_ACCEPT': "application/xml;q=0.9,"}
     setup_testing_defaults(environ)
     result = app.get_response(environ=environ)
-    assert result.body == ("silenced <class 'blanket.BlanketValueError'>, "
-                           "value: test")
+    assert result == ("silenced <class 'blanket.BlanketValueError'>, "
+                      "value: test")
 
 
 def test_exception_during_request_creation():
@@ -106,10 +109,40 @@ def test_exception_during_request_creation():
     app.add(path='/', handler=_exception_raiser, outputs=[JSON])
     app.add(exception_class=ValueError, handler=_exception_handler,
             outputs=[JSON])
+    environ = {'PATH_INFO': '/not/the/root/route/',
+               'HTTP_ACCEPT': "application/xml;q=0.9,"}
+    setup_testing_defaults(environ)
+    with pytest.raises(NoErrorHandler):
+        app.get_response(environ=environ)
+
+
+def test_missing_accept_during_request_creation():
+    """
+    Looks like webob.Request will happily build without a valid wsgi environ,
+    so the PATH_INFO yields into NoRouteHandler, which is in my code.
+    :return:
+    """
+    app = Blanket()
+    app.add(path='/', handler=_exception_raiser, outputs=[JSON])
     environ = {'PATH_INFO': '/not/the/root/route/'}
     setup_testing_defaults(environ)
     with pytest.raises(NoErrorHandler):
         app.get_response(environ=environ)
+
+def test_missing_routes_when_called():
+    """
+    Looks like webob.Request will happily build without a valid wsgi environ,
+    so the PATH_INFO yields into NoRouteHandler, which is in my code.
+    :return:
+    """
+    app = Blanket()
+    app.add(exception_class=NoRouteHandler, handler=_exception_handler,
+            outputs=[JSON])
+    environ = {'PATH_INFO': '/not/the/root/route/'}
+    setup_testing_defaults(environ)
+    response = app.get_response(environ=environ)
+    assert response == ("silenced <class 'blanket.NoRouteHandler'>, value: "
+                        "No routes are defined")
 
 
 def test_add_path():
@@ -133,3 +166,20 @@ def test_add_handler_without_exception_or_path():
     app = Blanket()
     with pytest.raises(BlanketValueError):
         app.add(handler=_ok_response, outputs=[JSON])
+
+
+def test_length():
+    app = Blanket()
+    app.add(path='/', handler=_ok_response, outputs=[JSON])
+    app.add(exception_class=StandardError, handler=_ok_response, outputs=[JSON])
+    assert len(app) == 2
+
+def test_contains():
+    app = Blanket()
+    app.add(path='/', handler=_ok_response, outputs=[JSON])
+    app.add(exception_class=StandardError, handler=_ok_response, outputs=[JSON])
+    assert '/' in app
+    assert StandardError in app
+    assert ValueError in app
+    assert '/test/' not in app
+    assert KeyboardInterrupt not in app

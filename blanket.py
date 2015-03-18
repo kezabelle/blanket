@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 from __future__ import division
 from collections import namedtuple
 from functools import partial
+from inspect import isclass, getargspec
 import json
 import logging
 import re
@@ -67,7 +68,7 @@ class RoutePattern(namedtuple('RoutePattern', 'raw regex')):
         # the default repr for a compiled regexp is useless, but would otherwise
         # bubble up in this namedtuple repr, so we override it.
         return "<blanket.RoutePattern raw='{raw!s}', regex='{regex!s}'>".format(
-            raw=self.raw, regex=self.regex.pattern,
+            raw=self.raw, regex=getattr(self.regex, 'pattern', None),
         )
 
 
@@ -210,6 +211,9 @@ class Route(namedtuple('Route', 'pattern handler outputs')):
     def log(self):
         return logging.getLogger(get_name_from_obj(self))
 
+    def handles(self, value):
+        return self.pattern.regex.match(value)
+
     def __repr__(self):
         return ("<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
             pattern=self.pattern, name=get_name_from_obj(self.handler),
@@ -217,7 +221,7 @@ class Route(namedtuple('Route', 'pattern handler outputs')):
         ))
 
     def __call__(self, request):
-        match = self.pattern.regex.match(request.path)
+        match = self.handles(value=request.path)
         if match is not None:
             match_kwargs = match.groupdict()
             self.log.debug("{route!r} wants to handle `{path!s}` and "
@@ -231,12 +235,14 @@ class Route(namedtuple('Route', 'pattern handler outputs')):
 
 
 class Router(object):
-    __slots__ = ('routes', 'seen_routes', 'transformer', 'application')
+    __slots__ = ('routes', 'seen_routes', 'application')
     def __init__(self, application=None):
         self.application = application
         self.routes = []
         self.seen_routes = set()
-        self.transformer = URLTransformRegistry()
+
+    def make_route(self, route_value, handler, outputs):
+        return Route(pattern=route_value, handler=handler, outputs=outputs)
 
     @property
     def log(self):
@@ -252,8 +258,33 @@ class Router(object):
         return '<{name!s} routes={routes!r}{trailing!s}>'.format(
             routes=top3, trailing=trailing, name=get_name_from_obj(self))
 
-    def add(self, path, handler, outputs):
-        route_pattern = self.transformer.make(path=path)
+    def prepare(self, value, handler, outputs):
+        argspec = getargspec(handler)
+        all_arguments = argspec.args
+        required_arguments = all_arguments[:]
+
+        if argspec.defaults is not None:
+            default_args = len(argspec.defaults)
+            if default_args > 0:
+                required_arguments = required_arguments[0:-default_args]
+
+        if 'request' in required_arguments:
+            required_arguments.remove('request')
+
+        arguments_in_path = value.count('{')
+        if len(required_arguments) != arguments_in_path:
+            raise BlanketValueError('Handler {handler!r} takes a different '
+                                    'number of arguments ({args!s}) than has '
+                                    'been accounted for in the route '
+                                    'template: {path!s}'.format(
+                handler=handler, path=value,
+                args=', '.join(required_arguments)))
+        transformer = URLTransformRegistry()
+        return transformer.make(path=value)
+
+    def add(self, thing, handler, outputs):
+        route_pattern = self.prepare(value=thing, handler=handler,
+                                     outputs=outputs)
         # handle duplicate mount points ...
         if route_pattern.raw in self.seen_routes:
             raise DuplicateRoute("`{path!s}` has already been added to "
@@ -264,14 +295,15 @@ class Router(object):
                        "routes".format(route=route_pattern, count=len(self)))
 
         self.seen_routes.add(route_pattern.raw)
-        route = Route(pattern=route_pattern, handler=handler, outputs=outputs)
+        route = self.make_route(route_value=route_pattern, handler=handler,
+                                outputs=outputs)
         self.routes.append(route)
 
     def __iter__(self):
         return iter(self.routes)
 
     def __contains__(self, item):
-        return any(route.pattern.regex.match(item) for route in self)
+        return any(route.handles(item) for route in self)
 
     def __len__(self):
         # this rather convoluted length check should mean I can tell if there's
@@ -289,11 +321,21 @@ class Router(object):
 
 
 class ErrorRoute(namedtuple('Route', 'exception_class handler outputs')):
+    @property
+    def log(self):
+        return logging.getLogger(get_name_from_obj(self))
+
     def handles(self, value):
         """
         Accepts an exception instance
         """
-        return isinstance(value, self.exception_class)
+        found_instance = isinstance(value, self.exception_class.raw)
+        if found_instance:
+            return True
+        try:
+            return issubclass(value, self.exception_class.raw)
+        except TypeError:
+            return issubclass(value.__class__, self.exception_class.raw)
 
     def __repr__(self):
         return ("<blanket.{cls!s} exception={exc!r}, handler={name!s}, "
@@ -303,34 +345,20 @@ class ErrorRoute(namedtuple('Route', 'exception_class handler outputs')):
         ))
 
 
-class ErrorRouter(object):
+class ErrorRouter(Router):
 
     __slots__ = ('routes', 'seen_routes', 'application')
-    def __init__(self, application=None):
-        self.application = application
-        self.routes = []
-        self.seen_routes = set()
+
+    def make_route(self, route_value, handler, outputs):
+        return ErrorRoute(exception_class=route_value, handler=handler,
+                           outputs=outputs)
 
     def __repr__(self):
         return '<blanket.ErrorRouter catching {routes!r}>'.format(
             routes=self.seen_routes)
 
-    def add(self, exception_class, handler, outputs):
-        if exception_class in self.seen_routes:
-            raise DuplicateRoute("{exc!r} has already been added to "
-                                 "this <blanket.ErrorRouter>".format(
-                exc=exception_class,
-            ))
-        self.seen_routes.add(exception_class)
-        route = ErrorRoute(exception_class=exception_class, handler=handler,
-                           outputs=outputs)
-        self.routes.append(route)
-
-    def __iter__(self):
-        return iter(self.routes)
-
-    def __contains__(self, item):
-        return any(route.handles(value=item) for route in self)
+    def prepare(self, value, handler, outputs):
+        return RoutePattern(raw=value, regex=None)
 
     def __call__(self, exception, request=None):
         for route in self:
@@ -354,7 +382,10 @@ class ManyHandler(object):
 
     def __call__(self, **kwargs):
         contexts = (keepcalling(handler, **kwargs) for handler in self.handlers)
-        return {k: v for context in contexts for k, v in iteritems_(context)}
+        filtered_contexts = (valid_context for valid_context in contexts
+                             if valid_context is not None)
+        return {k: v for context in filtered_contexts
+                for k, v in iteritems_(context)}
 
 
 
@@ -403,6 +434,33 @@ class Blanket(object):
         self.error_router = ErrorRouter(application=self)
         self.router = Router(application=self)
 
+    def __len__(self):
+        return len(self.router) + len(self.error_router)
+
+    def __nonzero__(self):
+        return bool(len(self))
+
+    def __contains__(self, item):
+        try:
+            return item in self.router
+        except TypeError:
+            return item in self.error_router
+        # is_class = isclass(type(item))
+        # if is_class and (issubclass(item, Exception) or isinstance(item, Exception)):
+        #     return item in self.error_router
+        # return item in self.router
+
+    def __getitem__(self, item):
+        if item in self.error_router:
+            return self.error_router[item]
+        else:
+            return self.router[item]
+
+    def __iter__(self):
+        routes = iter(iteritems_(self.router))
+        errors = iter(iteritems_(self.error_router))
+        return iter((routes, errors))
+
     @property
     def log(self):
         """
@@ -420,9 +478,9 @@ class Blanket(object):
             raise BlanketValueError("Cannot pass both `path` and "
                                     "`exception_class` ... at least for now")
         if path is not None:
-            self.router.add(path=path, handler=handler, outputs=outputs)
+            self.router.add(thing=path, handler=handler, outputs=outputs)
         elif exception_class is not None:
-            self.error_router.add(exception_class=exception_class,
+            self.error_router.add(thing=exception_class,
                                   handler=handler, outputs=outputs)
         else:  # nocover
             raise BlanketValueError("I don't know what you did, but I couldn't "
@@ -430,6 +488,13 @@ class Blanket(object):
 
 
     def get_response(self, environ):
+        try:
+            if len(self.router) < 1:
+                raise NoRouteHandler("No routes are defined")
+        except NoRouteHandler as exc:
+            self.log.error(str(exc), exc_info=1)
+            return self.error_router(exception=exc)
+
         try:
             request = Request(environ=environ, charset='utf-8')
             # MIMEAccept/NilAccept don't implement len() :(
@@ -440,19 +505,17 @@ class Blanket(object):
         except Exception as exc:  # nocover
             self.log.error(msg="Unable to create a `Request` instance with "
                                "the given `environ`", exc_info=1)
-            response = self.error_router(exception=exc)
-        else:
-            # we made the request OK
-            request.blanket = self
-            try:
-                response = self.router(request=request)
-            except Exception as exc:
-                self.log.error(msg="Unable to get the view handler for this "
-                                   "`request` instance safely.", exc_info=1,
-                               extra={'request': request})
-                response = self.error_router(exception=exc, request=request)
-        return Response(body=response)
+            return self.error_router(exception=exc)
+
+        # we made the request OK
+        try:
+            return self.router(request=request)
+        except Exception as exc:
+            self.log.error(msg="Unable to get the view handler for this "
+                               "`request` instance safely.", exc_info=1,
+                           extra={'request': request})
+            return self.error_router(exception=exc, request=request)
 
     def __call__(self, environ, start_response):
-        response_instance = self.get_response(environ=environ)
+        response_instance = Response(self.get_response(environ=environ))
         return response_instance(environ=environ, start_response=start_response)
