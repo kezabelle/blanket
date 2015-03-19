@@ -213,6 +213,9 @@ class Route(namedtuple('Route', 'pattern handler outputs')):
 
     def handles(self, value):
         return self.pattern.regex.match(value)
+        
+    def __contains__(self, value):
+        return self.handles(value=value)
 
     def __repr__(self):
         return ("<blanket.{cls!s} pattern={pattern!r}, handler={name!s}>".format(
@@ -311,6 +314,8 @@ class Router(object):
         return (len(self.routes) + len(self.seen_routes)) / 2
 
     def __call__(self, request):
+        if request.path not in self:
+            raise Exception('reminder to self, change this')
         for route in self:
             result = route(request=request)
             if result is not None:
@@ -320,7 +325,7 @@ class Router(object):
             path=request.path, routes=tuple(sorted(self.seen_routes))))
 
 
-class ErrorRoute(namedtuple('Route', 'exception_class handler outputs')):
+class ErrorRoute(namedtuple('ErrorRoute', 'exception_class handler outputs')):
     @property
     def log(self):
         return logging.getLogger(get_name_from_obj(self))
